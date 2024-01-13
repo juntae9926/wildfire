@@ -14,8 +14,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
-
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 MAX_EPOCHS = 5
 
@@ -29,6 +28,7 @@ def seed_everything(random_seed):
     print(f"Seed locked: {random_seed}")
 
 seed_everything(random_seed=42)
+
 # Load the dataset from the CSV file
 # data = pd.read_csv('data_230817.csv', header=None)
 # data = pd.read_csv('data_230916.csv', header=None, skiprows=1, index_col=0)
@@ -47,11 +47,10 @@ seed_everything(random_seed=42)
 # ]
 
 
-data_general = pd.read_csv('data_general.csv', header=None, skiprows=1, index_col=0)
-data_mountain = pd.read_csv('data_mountain.csv', header=None, skiprows=1, index_col=0)
+data_general = pd.read_csv('data/data_general.csv', header=None, skiprows=1, index_col=0)
+data_mountain = pd.read_csv('data/data_mountain.csv', header=None, skiprows=1, index_col=0)
 data = pd.concat([data_general, data_mountain])
 data = data.reset_index(drop=True)
-
 
 data.columns = [
     '진입 탈출로 개수',
@@ -260,44 +259,44 @@ for i in range(len(data_blocks)):
     weights.append(weight)
     
 
-    # fig, axs = plt.subplots(1, 3, figsize=(20,20))
-    # for i in range(3):
-    #     axs[i].imshow(masks[i][:50])
-    #     axs[i].set_title(f"mask {i}")
-    # fig.savefig("masks.png")
+    fig, axs = plt.subplots(1, 3, figsize=(20,20))
+    for i in range(3):
+        axs[i].imshow(masks[i][:50])
+        axs[i].set_title(f"mask {i}")
+    fig.savefig("masks.png")
 
-    # # plot explain matrix
-    # plt.figure(figsize=(10,6))
-    # plt.imshow(explain_matrix)
-    # plt.title("explain_matrix")
-    # plt.savefig(save_dir + "explain_matrix.png")
+    # plot explain matrix
+    plt.figure(figsize=(10,6))
+    plt.imshow(explain_matrix)
+    plt.title("explain_matrix")
+    plt.savefig(save_dir + "explain_matrix.png")
 
-    # # plot losses
-    # plt.figure(figsize=(10,6))
-    # plt.plot(clf.history['loss'], label='Train loss')
-    # plt.title("Loss over Epochs")
-    # plt.xlabel("Epochs")
-    # plt.ylabel("Loss")
-    # plt.legend()
-    # plt.savefig(save_dir +  "loss_plot.png")
+    # plot losses
+    plt.figure(figsize=(10,6))
+    plt.plot(clf.history['loss'], label='Train loss')
+    plt.title("Loss over Epochs")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig(save_dir +  "loss_plot.png")
 
-    # # plot auc
-    # plt.figure(figsize=(10,6))  # Create a new figure
-    # plt.plot(clf.history['train_accuracy'], label='Train Accuracy')
-    # plt.plot(clf.history['valid_accuracy'], label='Validation Accuracy')
-    # plt.title("Accuracy over Epochs")
-    # plt.xlabel("Epochs")
-    # plt.ylabel("Accuracy")
-    # plt.legend()
-    # plt.savefig(save_dir + "accuracy_plot.png")
+    # plot auc
+    plt.figure(figsize=(10,6))  # Create a new figure
+    plt.plot(clf.history['train_accuracy'], label='Train Accuracy')
+    plt.plot(clf.history['valid_accuracy'], label='Validation Accuracy')
+    plt.title("Accuracy over Epochs")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.savefig(save_dir + "accuracy_plot.png")
 
-    # # plot learning rates
-    # plt.figure(figsize=(10,6))  # Create another new figure
-    # plt.plot(clf.history['lr'])
-    # plt.title("Learning Rate over Epochs")
-    # plt.xlabel("Epochs")
-    # plt.ylabel("Learning Rate")
-    # plt.savefig(save_dir + "learning_rate_plot.png")
+    # plot learning rates
+    plt.figure(figsize=(10,6))  # Create another new figure
+    plt.plot(clf.history['lr'])
+    plt.title("Learning Rate over Epochs")
+    plt.xlabel("Epochs")
+    plt.ylabel("Learning Rate")
+    plt.savefig(save_dir + "learning_rate_plot.png")
 
 print(test_accs)
 print(f"weights are {np.mean(weights, axis=0)}")
