@@ -1,22 +1,32 @@
 import os
+from datetime import datetime
+from argparse import ArgumentParser
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import pandas as pd
+from matplotlib import pyplot as plt
+from sklearn.metrics import roc_auc_score, accuracy_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+
 from pytorch_tabnet.metrics import Metric
 from pytorch_tabnet.tab_model import TabNetClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import roc_auc_score, accuracy_score
-import numpy as np
 
-from matplotlib import pyplot as plt
+def add_train_args(parser: ArgumentParser):
+    parser.add_argument('--seed', default=42, type=int, help='seed')
+    parser.add_argument('--batch_size', default=256, type=int, help='batch size')
+    parser.add_argument('--lr', default=1e-2, type=float, help='learning rate')
+    parser.add_argument('--save_dir', default='./logs', type=str, help='save dir')
+    parser.add_argument('--max_epochs', default=50, type=int, help='max epochs')
+    parser.add_argument('--patience', default=20, type=int, help='patience')
+    parser.add_argument('--virtual_batch_size', default=256, type=int, help='virtual batch size')
+    parser.add_argument('--num_workers', default=12, type=int, help='num workers')
+    parser.add_argument('--cat_emb_dim', default=256, type=int, help='cat emb dim')
+    parser.add_argument('--mask_type', default='sparsemax', type=str, help='mask type', choices=['sparsemax', 'entmax'])
 
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-
-MAX_EPOCHS = 5
 
 def seed_everything(random_seed):
     torch.manual_seed(random_seed)
@@ -27,147 +37,21 @@ def seed_everything(random_seed):
     np.random.seed(random_seed)
     print(f"Seed locked: {random_seed}")
 
-seed_everything(random_seed=42)
+def process_column(data, column):
+    data[column] = (data[column] / 1000).apply(lambda x: round(x, 3))
+    return data
 
-# Load the dataset from the CSV file
-# data = pd.read_csv('data_230817.csv', header=None)
-# data = pd.read_csv('data_230916.csv', header=None, skiprows=1, index_col=0)
-# data.columns = [
-#     '진입 탈출로 개수',
-#     '30m 이내 진입 탈출로 개수',
-#     '최소 도로폭',
-#     '교차로 개수',
-#     '침엽수림 비율',
-#     '산림기준 이격 거리',
-#     '창문',
-#     '산불 진화용수 거리',
-#     '소방서와의 거리',
-#     '주건물 지붕특성',
-#     '불난 후 상태'
-# ]
+def make_dir():
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M")
+    save_dir = f"logs/{timestamp}/"
+    os.makedirs(save_dir, exist_ok=False)
+    return save_dir
 
-
-data_general = pd.read_csv('data/data_general.csv', header=None, skiprows=1, index_col=0)
-data_mountain = pd.read_csv('data/data_mountain.csv', header=None, skiprows=1, index_col=0)
-data = pd.concat([data_general, data_mountain])
-data = data.reset_index(drop=True)
-
-data.columns = [
-    '진입 탈출로 개수',
-    '30m 이내 진입 탈출로 개수',
-    '최소 도로폭',
-    '교차로 개수',
-    '침엽수림 비율',
-    '산림기준 이격 거리',
-    '창문',
-    '산불 진화용수 거리',
-    '소방서와의 거리',
-    '담 유무',
-    '산림방향 담 유무',
-    '최대 경사도',
-    '최소 경사도',
-    '주건물 지붕특성',
-    '비산거리',
-    '불난 후 상태'
-]
-data = data.drop(['진입 탈출로 개수', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
-# data = data.drop(['교차로 개수', '산불 진화용수 거리', '소방서와의 거리', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
-
-# 마을 별 구분
-# indices = data.index[data.isna().any(axis=1)].tolist()
-indices = data.index[data['불난 후 상태'].isna()].tolist()
-data_blocks = []
-start = 0
-for idx in indices:
-    if idx == 0:
-        continue
-    data_blocks.append(data.iloc[start:idx])
-    start = idx + 1
-
-if start < len(data):
-    data_blocks.append(data.iloc[start:])
-
-data_blocks = [block.dropna() for block in data_blocks]
-
-# 9,10 마을 제외
-# a = data_blocks.pop(-1)
-# b = data_blocks.pop(-1)
-# data_blocks = []
-# data_blocks.append(a)
-# data_blocks.append(b)
-
-data_blocks[9]['산불 진화용수 거리'] = data_blocks[9]['산불 진화용수 거리'] / 1000
-data_blocks[9]['산불 진화용수 거리'] = data_blocks[9]['산불 진화용수 거리'].apply(lambda x: round(x, 3))
-
-data_blocks[10]['산불 진화용수 거리'] = data_blocks[10]['산불 진화용수 거리'] / 1000
-data_blocks[10]['산불 진화용수 거리'] = data_blocks[10]['산불 진화용수 거리'].apply(lambda x: round(x, 3))
-
-data_blocks[9]['소방서와의 거리'] = data_blocks[9]['소방서와의 거리'] / 1000
-data_blocks[9]['소방서와의 거리'] = data_blocks[9]['소방서와의 거리'].apply(lambda x: round(x, 3))
-
-data_blocks[10]['소방서와의 거리'] = data_blocks[10]['소방서와의 거리'] / 1000
-data_blocks[10]['소방서와의 거리'] = data_blocks[10]['소방서와의 거리'].apply(lambda x: round(x, 3))
-
-data_len = [len(block) for block in data_blocks]
-print(data_len)
-
-# 산림 기준 학습 split
-# split = [64.17, 38.0, 35.52, 53.92, 57.39, 67.93, 83.0, 22.67, 23.27, 34.0, 32.63]
-# over = [split.index(x) for x in split if x > 50.0]
-# under = [split.index(x) for x in split if x < 50.0]
-
-# over
-# data_blocks = [data_blocks[i] for i in over]
-# data_blocks.pop(4)
-# data_blocks.pop(6)
-# data_blocks.pop(6)
-# data_len = [len(block) for block in data_blocks]
-# print(data_len)
-
-# o = data_blocks.pop(0)
-# a = data_blocks.pop(3)
-# b = data_blocks.pop(5)
-# c = data_blocks.pop(5)
-# data_blocks = []
-# data_blocks.append(o)
-# data_blocks.append(a)
-# data_blocks.append(b)
-# data_blocks.append(c)
-
-# data_len = [len(block) for block in data_blocks]
-# print(data_len)
-
-
-# Random set 구분
-# data = pd.concat(data_blocks).reset_index()
-# if "Set" not in data.columns:
-    # data["Set"] = np.random.choice(["train", "valid", "test"], p =[.8, .1, .1], size=(data.shape[0]))
-
-
-# validation 데이터를 전체의 10퍼센트씩으로 구성할 경우
-vals = []
-for idx in range(len(data_blocks)):
-    val = data_blocks[idx].sample(frac=0.10)
-    data_blocks[idx].drop(val.index, inplace=True)
-    vals.append(val)
-val_block = pd.concat(vals)
-data_len = [len(block) for block in data_blocks]
-print(data_len)
-
-
-# 학습
-test_accs = []
-weights = []
-for i in range(len(data_blocks)):
-    # if not i > 8:
-    #     continue
-
-    save_dir = f'figs/{i}/'
-    if not os.path.isdir(save_dir):
-        os.makedirs(save_dir)
+def prepare_data(data_blocks, i, val_block, save_dir):
+    save_dir = save_dir + f"{i}/"
     
     _data_blocks = data_blocks.copy()
-    # val_block = data_blocks.pop(0)
     test_block = _data_blocks.pop(i)
     
     train_blocks = pd.concat(_data_blocks)
@@ -177,7 +61,9 @@ for i in range(len(data_blocks)):
     train_blocks["Set"] = 'train'
     data = pd.concat([val_block, test_block, train_blocks]).reset_index()
     
+    return data, save_dir
 
+def process_data(data):
     train_indices = data[data.Set=="train"].index
     valid_indices = data[data.Set=="valid"].index
     test_indices = data[data.Set=="test"].index
@@ -190,7 +76,6 @@ for i in range(len(data_blocks)):
 
     for col in data.columns:
         if types[col] == 'object' or nunique[col] < 20:
-            # print(col, data[col].nunique())
             l_enc = LabelEncoder()
             data[col] = data[col].fillna(0.0)
             data[col] = l_enc.fit_transform(data[col].values)
@@ -207,6 +92,9 @@ for i in range(len(data_blocks)):
     cat_idxs = [i for i, f in enumerate(features) if f in categorical_columns]
     cat_dims = [categorical_dims[f] for i, f in enumerate(features) if f in categorical_columns]
 
+    return data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices
+
+def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir):
     X_train = data[features].values[train_indices]
     y_train = data[target].values[train_indices]
 
@@ -219,15 +107,13 @@ for i in range(len(data_blocks)):
     ## Train
     clf = TabNetClassifier(cat_idxs=cat_idxs,
                         cat_dims=cat_dims,
-                        cat_emb_dim=64,
+                        cat_emb_dim=args.cat_emb_dim,
                         optimizer_fn=torch.optim.Adam,
-                        optimizer_params=dict(lr=2e-2),
-                        scheduler_params={"step_size":1,
-                                            "gamma":0.99},
+                        optimizer_params=dict(lr=args.lr),
+                        scheduler_params={"step_size":1, "gamma":0.99},
                         scheduler_fn=torch.optim.lr_scheduler.StepLR,
-                        mask_type='entmax' # "sparsemax", entmax)
+                        mask_type=args.mask_type
                         )
-
 
     save_history = []
     clf.fit(
@@ -235,69 +121,118 @@ for i in range(len(data_blocks)):
             eval_set=[(X_train, y_train), (X_valid, y_valid)],
             eval_name=['train', 'valid'],
             eval_metric=['accuracy'],
-            max_epochs=MAX_EPOCHS,
-            patience=20,
-            batch_size=256,
-            virtual_batch_size=256,
-            num_workers=12,
+            max_epochs=args.max_epochs,
+            patience=args.patience,
+            batch_size=args.batch_size,
+            virtual_batch_size=args.virtual_batch_size,
+            num_workers=args.num_workers,
             weights=1,
             drop_last=False
             )
     save_history.append(clf.history["valid_accuracy"])
-    clf.save_model('./ckpt')
-
+    clf.save_model(os.path.join(save_dir, './ckpt'))
 
     ## Test
     preds = clf.predict_proba(X_test)
-    # test_auc = roc_auc_score(y_score=preds[:,1], y_true=y_test)
     test_accuracy = accuracy_score(y_true=y_test, y_pred= np.argmax(preds, axis=1))
-    test_accs.append(round(test_accuracy*100, 1))
     print(f"TEST accuracy is {test_accuracy}")
 
     explain_matrix, masks = clf.explain(X_test, normalize=True)
     weight = np.mean(explain_matrix, axis=0)
-    weights.append(weight)
-    
+    record(save_dir, clf, masks[0], explain_matrix)
 
-    fig, axs = plt.subplots(1, 3, figsize=(20,20))
-    for i in range(3):
-        axs[i].imshow(masks[i][:50])
-        axs[i].set_title(f"mask {i}")
-    fig.savefig("masks.png")
+    return round(test_accuracy*100, 1), weight
 
-    # plot explain matrix
+def plot_and_save(data, title, xlabel, ylabel, save_dir, filename, legend=None):
+    plt.figure(figsize=(10,6))
+    if legend:
+        for d, l in zip(data, legend):
+            plt.plot(d, label=l)
+        plt.legend()
+    else:
+        plt.plot(data)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.savefig(save_dir + filename)
+
+def record(save_dir, clf, masks, explain_matrix):
+    # Save masks
+    plt.imsave(save_dir + f"mask.png", masks[:50])
+
+    # Save explain matrix
     plt.figure(figsize=(10,6))
     plt.imshow(explain_matrix)
     plt.title("explain_matrix")
     plt.savefig(save_dir + "explain_matrix.png")
 
-    # plot losses
-    plt.figure(figsize=(10,6))
-    plt.plot(clf.history['loss'], label='Train loss')
-    plt.title("Loss over Epochs")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.savefig(save_dir +  "loss_plot.png")
+    # Save accuracy
+    plot_and_save([clf.history['train_accuracy'], clf.history['valid_accuracy']], 'Accuracy over Epochs', 'Epochs', 'Accuracy', save_dir, 'accuracy_plot.png', ['Train Accuracy', 'Validation Accuracy'])
 
-    # plot auc
-    plt.figure(figsize=(10,6))  # Create a new figure
-    plt.plot(clf.history['train_accuracy'], label='Train Accuracy')
-    plt.plot(clf.history['valid_accuracy'], label='Validation Accuracy')
-    plt.title("Accuracy over Epochs")
-    plt.xlabel("Epochs")
-    plt.ylabel("Accuracy")
-    plt.legend()
-    plt.savefig(save_dir + "accuracy_plot.png")
+    # Save learning rates
+    plot_and_save(clf.history['lr'], 'Learning Rate over Epochs', 'Epochs', 'Learning Rate', save_dir, 'learning_rate_plot.png')
 
-    # plot learning rates
-    plt.figure(figsize=(10,6))  # Create another new figure
-    plt.plot(clf.history['lr'])
-    plt.title("Learning Rate over Epochs")
-    plt.xlabel("Epochs")
-    plt.ylabel("Learning Rate")
-    plt.savefig(save_dir + "learning_rate_plot.png")
+def main(args):
+    data_general = pd.read_csv('data/data_general.csv', header=None, skiprows=1, index_col=0)
+    data_mountain = pd.read_csv('data/data_mountain.csv', header=None, skiprows=1, index_col=0)
+    data = pd.concat([data_general, data_mountain])
+    data = data.reset_index(drop=True)
 
-print(test_accs)
-print(f"weights are {np.mean(weights, axis=0)}")
-print(f"MEAN is {sum(test_accs)/len(test_accs)}")
+    data.columns = [
+        '진입 탈출로 개수',
+        '30m 이내 진입 탈출로 개수',
+        '최소 도로폭',
+        '교차로 개수',
+        '침엽수림 비율',
+        '산림기준 이격 거리',
+        '창문',
+        '산불 진화용수 거리',
+        '소방서와의 거리',
+        '담 유무',
+        '산림방향 담 유무',
+        '최대 경사도',
+        '최소 경사도',
+        '주건물 지붕특성',
+        '비산거리',
+        '불난 후 상태'
+    ]
+    data = data.drop(['진입 탈출로 개수', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
+    indices = data.index[data['불난 후 상태'].isna()].tolist()
+
+    data_blocks = [data.iloc[start:idx].dropna() for start, idx in zip([0] + indices, indices + [None]) if start != idx]
+
+    for i in [9, 10]:
+        data_blocks[i] = process_column(data_blocks[i], '산불 진화용수 거리')
+        data_blocks[i] = process_column(data_blocks[i], '소방서와의 거리')
+
+    data_len = [len(block) for block in data_blocks]
+    print(data_len)
+
+    vals = [block.sample(frac=0.10) for block in data_blocks]
+    data_blocks = [block.drop(val.index) for block, val in zip(data_blocks, vals)]
+    val_block = pd.concat(vals)
+    data_len = [len(block) for block in data_blocks]
+    print(data_len)
+
+    save_dir = make_dir()
+    test_accs = []
+    weights = []
+    for i in range(len(data_blocks)):
+        data, save_dir = prepare_data(data_blocks, i, val_block, save_dir)
+        data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices = process_data(data)
+        test_acc, weight = train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir)
+        test_accs.append(test_acc)
+        weights.append(weight)
+
+    print(test_accs)
+    print(f"weights are {np.mean(weights, axis=0)}")
+    print(f"MEAN is {sum(test_accs)/len(test_accs)}")
+
+
+if __name__ == "__main__":
+    seed_everything(random_seed=42)
+    parser = ArgumentParser()
+    add_train_args(parser)
+    args = parser.parse_args()
+    print(args)
+    main(args)
