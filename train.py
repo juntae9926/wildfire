@@ -5,12 +5,10 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-import torch.optim as optim
+
 from matplotlib import pyplot as plt
-from sklearn.metrics import roc_auc_score, accuracy_score
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler, QuantileTransformer, MinMaxScaler
 
 from pytorch_tabnet.metrics import Metric
 from pytorch_tabnet.tab_model import TabNetClassifier
@@ -21,7 +19,7 @@ def add_train_args(parser: ArgumentParser):
     parser.add_argument('--lr', default=1e-2, type=float, help='learning rate')
     parser.add_argument('--save_dir', default='./logs', type=str, help='save dir')
     parser.add_argument('--max_epochs', default=50, type=int, help='max epochs')
-    parser.add_argument('--patience', default=20, type=int, help='patience')
+    parser.add_argument('--patience', default=10, type=int, help='patience')
     parser.add_argument('--virtual_batch_size', default=256, type=int, help='virtual batch size')
     parser.add_argument('--num_workers', default=12, type=int, help='num workers')
     parser.add_argument('--cat_emb_dim', default=256, type=int, help='cat emb dim')
@@ -41,15 +39,15 @@ def process_column(data, column):
     data[column] = (data[column] / 1000).apply(lambda x: round(x, 3))
     return data
 
-def make_dir():
+def make_dir(base_dir):
     now = datetime.now()
-    timestamp = now.strftime("%Y%m%d_%H%M")
-    save_dir = f"logs/{timestamp}/"
-    os.makedirs(save_dir, exist_ok=False)
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+    save_dir = os.path.join(base_dir, timestamp)
+    os.makedirs(save_dir, exist_ok=True)
     return save_dir
 
-def prepare_data(data_blocks, i, val_block, save_dir):
-    save_dir = save_dir + f"{i}/"
+def prepare_data(data_blocks, i, val_block, base_dir):
+    save_dir = os.path.join(base_dir, str(i))
     
     _data_blocks = data_blocks.copy()
     test_block = _data_blocks.pop(i)
@@ -60,13 +58,12 @@ def prepare_data(data_blocks, i, val_block, save_dir):
     test_block["Set"] = 'test'
     train_blocks["Set"] = 'train'
     data = pd.concat([val_block, test_block, train_blocks]).reset_index()
-    
     return data, save_dir
 
 def process_data(data):
-    train_indices = data[data.Set=="train"].index
-    valid_indices = data[data.Set=="valid"].index
-    test_indices = data[data.Set=="test"].index
+    train_indices = data[data.Set == "train"].index
+    valid_indices = data[data.Set == "valid"].index
+    test_indices = data[data.Set == "test"].index
 
     nunique = data.nunique()
     types = data.dtypes
@@ -81,19 +78,19 @@ def process_data(data):
             data[col] = l_enc.fit_transform(data[col].values)
             categorical_columns.append(col)
             categorical_dims[col] = len(l_enc.classes_)
-        
         else:
             data.fillna(data.loc[train_indices, col].mean(), inplace=True)
 
     data.drop(['index'], axis=1, inplace=True)
-    target = '불난 후 상태'
+    target = 'label'
     unused_feat = ['Set']
-    features = [col for col in data.columns if col not in unused_feat+[target]]
+    features = [col for col in data.columns if col not in unused_feat + [target]]
     cat_idxs = [i for i, f in enumerate(features) if f in categorical_columns]
     cat_dims = [categorical_dims[f] for i, f in enumerate(features) if f in categorical_columns]
 
     return data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices
 
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir):
     X_train = data[features].values[train_indices]
     y_train = data[target].values[train_indices]
@@ -104,14 +101,23 @@ def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, va
     X_test = data[features].values[test_indices]
     y_test = data[target].values[test_indices]
 
+    scaler = MinMaxScaler()
+    scaler.fit(X_train)
+    X_train = scaler.transform(X_train)
+    X_valid = scaler.transform(X_valid)
+    X_test = scaler.transform(X_test)
+
     ## Train
     clf = TabNetClassifier(cat_idxs=cat_idxs,
                         cat_dims=cat_dims,
                         cat_emb_dim=args.cat_emb_dim,
                         optimizer_fn=torch.optim.Adam,
-                        optimizer_params=dict(lr=args.lr),
-                        scheduler_params={"step_size":1, "gamma":0.99},
-                        scheduler_fn=torch.optim.lr_scheduler.StepLR,
+                        # optimizer_params=dict(lr=args.lr),
+                        optimizer_params=dict(lr=args.lr, weight_decay=1e-5),
+                        # scheduler_params={"step_size":1, "gamma":0.99},
+                        # scheduler_fn=torch.optim.lr_scheduler.StepLR,
+                        scheduler_params = dict(mode = "min", patience = 5, min_lr = 1e-5, factor = 0.9),
+                        scheduler_fn = ReduceLROnPlateau,
                         mask_type=args.mask_type
                         )
 
@@ -154,17 +160,19 @@ def plot_and_save(data, title, xlabel, ylabel, save_dir, filename, legend=None):
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.savefig(save_dir + filename)
+    save_path = os.path.join(save_dir, filename)  # 저장 경로 수정
+    plt.savefig(save_path)
 
 def record(save_dir, clf, masks, explain_matrix):
     # Save masks
-    plt.imsave(save_dir + f"mask.png", masks[:50])
+    plt.imsave(os.path.join(save_dir, f"mask.png"), masks[10:])  # 저장 경로 수정
 
     # Save explain matrix
     plt.figure(figsize=(10,6))
     plt.imshow(explain_matrix)
     plt.title("explain_matrix")
-    plt.savefig(save_dir + "explain_matrix.png")
+    save_path = os.path.join(save_dir, "explain_matrix.png")  # 저장 경로 수정
+    plt.savefig(save_path)
 
     # Save accuracy
     plot_and_save([clf.history['train_accuracy'], clf.history['valid_accuracy']], 'Accuracy over Epochs', 'Epochs', 'Accuracy', save_dir, 'accuracy_plot.png', ['Train Accuracy', 'Validation Accuracy'])
@@ -194,10 +202,10 @@ def main(args):
         '최소 경사도',
         '주건물 지붕특성',
         '비산거리',
-        '불난 후 상태'
+        'label'
     ]
     data = data.drop(['진입 탈출로 개수', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
-    indices = data.index[data['불난 후 상태'].isna()].tolist()
+    indices = data.index[data['label'].isna()].tolist()
 
     data_blocks = [data.iloc[start:idx].dropna() for start, idx in zip([0] + indices, indices + [None]) if start != idx]
 
@@ -214,19 +222,19 @@ def main(args):
     data_len = [len(block) for block in data_blocks]
     print(data_len)
 
-    save_dir = make_dir()
+    base_dir = make_dir(args.save_dir)
     test_accs = []
     weights = []
     for i in range(len(data_blocks)):
-        data, save_dir = prepare_data(data_blocks, i, val_block, save_dir)
+        data, save_dir = prepare_data(data_blocks, i, val_block, base_dir)
         data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices = process_data(data)
         test_acc, weight = train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir)
         test_accs.append(test_acc)
         weights.append(weight)
 
-    print(test_accs)
-    print(f"weights are {np.mean(weights, axis=0)}")
-    print(f"MEAN is {sum(test_accs)/len(test_accs)}")
+    print(f"Test Accuracies: {test_accs}")
+    print(f"Average Weights: {np.mean(weights, axis=0):.2f}")
+    print(f"Mean Test Accuracy: {sum(test_accs)/len(test_accs):.2f}")
 
 
 if __name__ == "__main__":
