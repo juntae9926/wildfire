@@ -47,11 +47,6 @@ pip install pandas matplotlib scikit-learn
 sh train.sh
 ```
 
-### Evaluation
-```
-sh disc_eval.sh
-```
-
 ## Citation
 ```
 @article{juntae2023,
