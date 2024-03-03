@@ -5,13 +5,16 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 import torch
+import random
 
 from matplotlib import pyplot as plt
 from sklearn.metrics import accuracy_score
-from sklearn.preprocessing import LabelEncoder, StandardScaler, QuantileTransformer, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler, StandardScaler, QuantileTransformer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from pytorch_tabnet.metrics import Metric
 from pytorch_tabnet.tab_model import TabNetClassifier
+import shap
 
 def add_train_args(parser: ArgumentParser):
     parser.add_argument('--seed', default=42, type=int, help='seed')
@@ -19,11 +22,12 @@ def add_train_args(parser: ArgumentParser):
     parser.add_argument('--lr', default=1e-2, type=float, help='learning rate')
     parser.add_argument('--save_dir', default='./logs', type=str, help='save dir')
     parser.add_argument('--max_epochs', default=50, type=int, help='max epochs')
-    parser.add_argument('--patience', default=10, type=int, help='patience')
-    parser.add_argument('--virtual_batch_size', default=256, type=int, help='virtual batch size')
+    parser.add_argument('--patience', default=5, type=int, help='patience')
+    parser.add_argument('--virtual_batch_size', default=128, type=int, help='virtual batch size')
     parser.add_argument('--num_workers', default=12, type=int, help='num workers')
-    parser.add_argument('--cat_emb_dim', default=256, type=int, help='cat emb dim')
+    parser.add_argument('--cat_emb_dim', default=128, type=int, help='cat emb dim')
     parser.add_argument('--mask_type', default='sparsemax', type=str, help='mask type', choices=['sparsemax', 'entmax'])
+
 
 
 def seed_everything(random_seed):
@@ -90,7 +94,6 @@ def process_data(data):
 
     return data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices
 
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir):
     X_train = data[features].values[train_indices]
     y_train = data[target].values[train_indices]
@@ -116,7 +119,7 @@ def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, va
                         optimizer_params=dict(lr=args.lr, weight_decay=1e-5),
                         # scheduler_params={"step_size":1, "gamma":0.99},
                         # scheduler_fn=torch.optim.lr_scheduler.StepLR,
-                        scheduler_params = dict(mode = "min", patience = 5, min_lr = 1e-5, factor = 0.9),
+                        scheduler_params = dict(mode = "max", patience = 5, min_lr = 1e-5, factor = 0.5),
                         scheduler_fn = ReduceLROnPlateau,
                         mask_type=args.mask_type
                         )
@@ -132,11 +135,24 @@ def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, va
             batch_size=args.batch_size,
             virtual_batch_size=args.virtual_batch_size,
             num_workers=args.num_workers,
-            weights=1,
+            weights=0,
             drop_last=False
             )
     save_history.append(clf.history["valid_accuracy"])
     clf.save_model(os.path.join(save_dir, './ckpt'))
+
+    # explainer = shap.KernelExplainer(clf.predict, X_train)
+    # explainer = shap.KernelExplainer(clf.predict, shap.kmeans(X_train, 20))
+    # shap_values = explainer.shap_values(X_test)
+    # shap.summary_plot(shap_values, X_test, show=False)
+    # plt.savefig('shap_summary_plot.png')
+    # plt.clf()
+
+    # feature = features[0]
+    # interaction_index = None
+    # shap.dependence_plot(feature, shap_values, X_test, interaction_index=interaction_index, show=False)
+    # plt.savefig(os.path.join(save_dir, f'shap_dependence_plot_{feature}.png'))
+    # plt.clf()
 
     ## Test
     preds = clf.predict_proba(X_test)
@@ -147,7 +163,7 @@ def train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, va
     weight = np.mean(explain_matrix, axis=0)
     record(save_dir, clf, masks[0], explain_matrix)
 
-    return round(test_accuracy*100, 1), weight
+    return test_accuracy, weight
 
 def plot_and_save(data, title, xlabel, ylabel, save_dir, filename, legend=None):
     plt.figure(figsize=(10,6))
@@ -160,18 +176,18 @@ def plot_and_save(data, title, xlabel, ylabel, save_dir, filename, legend=None):
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    save_path = os.path.join(save_dir, filename)  # 저장 경로 수정
+    save_path = os.path.join(save_dir, filename)
     plt.savefig(save_path)
 
 def record(save_dir, clf, masks, explain_matrix):
     # Save masks
-    plt.imsave(os.path.join(save_dir, f"mask.png"), masks[10:])  # 저장 경로 수정
+    plt.imsave(os.path.join(save_dir, f"mask.png"), masks[10:])
 
     # Save explain matrix
     plt.figure(figsize=(10,6))
     plt.imshow(explain_matrix)
     plt.title("explain_matrix")
-    save_path = os.path.join(save_dir, "explain_matrix.png")  # 저장 경로 수정
+    save_path = os.path.join(save_dir, "explain_matrix.png")
     plt.savefig(save_path)
 
     # Save accuracy
@@ -204,10 +220,12 @@ def main(args):
         '비산거리',
         'label'
     ]
-    data = data.drop(['진입 탈출로 개수', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
+    # data = data.drop(['진입 탈출로 개수', '담 유무', '산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
+    data = data.drop(['산림방향 담 유무', '최대 경사도', '최소 경사도'], axis=1)
     indices = data.index[data['label'].isna()].tolist()
 
     data_blocks = [data.iloc[start:idx].dropna() for start, idx in zip([0] + indices, indices + [None]) if start != idx]
+    
 
     for i in [9, 10]:
         data_blocks[i] = process_column(data_blocks[i], '산불 진화용수 거리')
@@ -216,26 +234,28 @@ def main(args):
     data_len = [len(block) for block in data_blocks]
     print(data_len)
 
-    vals = [block.sample(frac=0.10) for block in data_blocks]
+    vals = [block.sample(frac=0.1) for block in data_blocks]
     data_blocks = [block.drop(val.index) for block, val in zip(data_blocks, vals)]
     val_block = pd.concat(vals)
     data_len = [len(block) for block in data_blocks]
     print(data_len)
 
+    feature_importances_list = []
     base_dir = make_dir(args.save_dir)
     test_accs = []
-    weights = []
     for i in range(len(data_blocks)):
         data, save_dir = prepare_data(data_blocks, i, val_block, base_dir)
         data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices = process_data(data)
         test_acc, weight = train_and_test(data, target, features, cat_idxs, cat_dims, train_indices, valid_indices, test_indices, save_dir)
         test_accs.append(test_acc)
-        weights.append(weight)
+        feature_importances_list.append(weight)
 
-    print(f"Test Accuracies: {test_accs}")
-    print(f"Average Weights: {np.mean(weights, axis=0):.2f}")
-    print(f"Mean Test Accuracy: {sum(test_accs)/len(test_accs):.2f}")
-
+    print("Average test accuracy:", np.mean(test_accs))
+    print(f"Test accuracies: {test_accs}")
+    print("Average feature importances:")
+    avg_feature_importances = np.mean(feature_importances_list, axis=0)
+    for feature, importance in zip(features, avg_feature_importances):
+        print(f"{feature}: {importance}")
 
 if __name__ == "__main__":
     seed_everything(random_seed=42)
